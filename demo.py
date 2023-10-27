@@ -56,11 +56,18 @@ def load_checkpoints(config_path, checkpoint_path, cpu=False):
 
 
 def make_animation(source_image, driving_video, generator, kp_detector, relative=True, adapt_movement_scale=True, cpu=False):
+    # 输入的 source_image shape: [256, 256, 3]
+    #       driving_video shape: [TIME, 256, 256, 3]
+
     with torch.no_grad():
         predictions = []
+        # np.array[np.newaxis] => 会在 array 的第 0 维处增加一维！
+        # 新的 source shape = [256, 256, 3] => [1, 256, 256, 3] => [1, 3, 256, 256]
+        # - 把 channel 放到前面了！
         source = torch.tensor(source_image[np.newaxis].astype(np.float32)).permute(0, 3, 1, 2)
         if not cpu:
             source = source.cuda()
+        # driving new shape = [1, 3, TIME, 256, 256]
         driving = torch.tensor(np.array(driving_video)[np.newaxis].astype(np.float32)).permute(0, 4, 1, 2, 3)
         kp_source = kp_detector(source)
         kp_driving_initial = kp_detector(driving[:, :, 0])
