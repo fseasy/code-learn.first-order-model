@@ -23,10 +23,12 @@ if sys.version_info[0] < 3:
     raise Exception("You must use Python 3 or higher. Recommended version is Python 3.7")
 
 def load_checkpoints(config_path, checkpoint_path, cpu=False):
-
+    # 先加载参数，构建 model.
+    # 再加载 checkpoint, load 预训练参数
     with open(config_path) as f:
         config = yaml.full_load(f)
 
+    # 主要 2 个 model: Generator; KPDetector.
     generator = OcclusionAwareGenerator(**config['model_params']['generator_params'],
                                         **config['model_params']['common_params'])
     if not cpu:
@@ -69,19 +71,27 @@ def make_animation(source_image, driving_video, generator, kp_detector, relative
             source = source.cuda()
         # driving new shape = [1, 3, TIME, 256, 256]
         driving = torch.tensor(np.array(driving_video)[np.newaxis].astype(np.float32)).permute(0, 4, 1, 2, 3)
+        # 对 source 算 KP
+        # 输入的 shape = [1, 3, 256, 256], bz x channel x h x w
         kp_source = kp_detector(source)
+        # 对 driving 的第 0 帧算 KP, 初始化的 KP
+        # 注意这里是对 5-D 的 tensor 做 slice，只写了前 3 维的处理，后面 2 维是默认全取？
+        # => 验证了下，是的！ 所以 kp_detector 的输入 shpae = [1, 3, 256, 256] 
+        # => 即 bz x channel x h x w
         kp_driving_initial = kp_detector(driving[:, :, 0])
-
+        # 在时间维度按序迭代（即 frame 维度）； 这里第 0 帧依旧会被处理
         for frame_idx in tqdm(range(driving.shape[2])):
             driving_frame = driving[:, :, frame_idx]
             if not cpu:
                 driving_frame = driving_frame.cuda()
             kp_driving = kp_detector(driving_frame)
+            # 基于 kp-source, kp-source-initial 对 kp_driving 做 normalize. warp?
             kp_norm = normalize_kp(kp_source=kp_source, kp_driving=kp_driving,
                                    kp_driving_initial=kp_driving_initial, use_relative_movement=relative,
                                    use_relative_jacobian=relative, adapt_movement_scale=adapt_movement_scale)
+            # 输入 source 图片, kp_source, kp_driving-norm 来生成最终的结果
             out = generator(source, kp_source=kp_source, kp_driving=kp_norm)
-
+            # 
             predictions.append(np.transpose(out['prediction'].data.cpu().numpy(), [0, 2, 3, 1])[0])
     return predictions
 

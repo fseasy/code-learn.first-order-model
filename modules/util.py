@@ -101,9 +101,12 @@ class DownBlock2d(nn.Module):
 
     def __init__(self, in_features, out_features, kernel_size=3, padding=1, groups=1):
         super(DownBlock2d, self).__init__()
+        # conv 后的 size 是 n - kernel_size + 1 + 2*padding. 带入 kernel=3, padding=2，
+        # 可知 conv 后 siz 不会变
         self.conv = nn.Conv2d(in_channels=in_features, out_channels=out_features, kernel_size=kernel_size,
                               padding=padding, groups=groups)
         self.norm = BatchNorm2d(out_features, affine=True)
+        # Avg Pooling，可知 h, w 之后成为 H/2, W/2 均减为一半
         self.pool = nn.AvgPool2d(kernel_size=(2, 2))
 
     def forward(self, x):
@@ -142,12 +145,17 @@ class Encoder(nn.Module):
 
         down_blocks = []
         for i in range(num_blocks):
+            # 每层的输入是 block_expansion * 2 ** i；输出是 block_expansion * 2 **(i + 1)
+            # 例外：
+            # - 第一层输入是 in_feature
+            # - block_expansion * 2 ** i 也不是无限增加的，最大的 size 是 max_features
             down_blocks.append(DownBlock2d(in_features if i == 0 else min(max_features, block_expansion * (2 ** i)),
                                            min(max_features, block_expansion * (2 ** (i + 1))),
                                            kernel_size=3, padding=1))
         self.down_blocks = nn.ModuleList(down_blocks)
 
     def forward(self, x):
+        # 输入是 BCHW
         outs = [x]
         for down_block in self.down_blocks:
             outs.append(down_block(outs[-1]))
@@ -160,23 +168,34 @@ class Decoder(nn.Module):
     """
 
     def __init__(self, block_expansion, in_features, num_blocks=3, max_features=256):
+        # block-expansion, 就对应 conv 最终的 channel 大小，也是每层间缩放的基数；和 Encoder 对应的
+
         super(Decoder, self).__init__()
 
         up_blocks = []
 
         for i in range(num_blocks)[::-1]:
-            in_filters = (1 if i == num_blocks - 1 else 2) * min(max_features, block_expansion * (2 ** (i + 1)))
+            # i 最开始是 num_blocsk - 1, 所以 in_filer 一开始是 1 * min(max_feature, block_expansion * 2**num_blocker)
+            # 和 Encoder 的最后一层的 channel 是对应的
+            # 后续层，要乘以 2；从后面看到，是因为要做残差连接，把 encoder 相应的层输出，以及 decoder 上一层输出 concat 起来输进来；所以乘以 2
+            in_filters = (1 if i == num_blocks - 1 else 2) * min(max_features, block_expansion * (2
+             ** (i + 1)))
+            # 输出 channel 在变小(因为  h, w 不断扩大；和 Encoder 反过来)
             out_filters = min(max_features, block_expansion * (2 ** i))
             up_blocks.append(UpBlock2d(in_filters, out_filters, kernel_size=3, padding=1))
 
         self.up_blocks = nn.ModuleList(up_blocks)
+        # block_expansion 对应 UpBlock 的输出；in_features 对应 encoder 过来的skip-connection
         self.out_filters = block_expansion + in_features
 
     def forward(self, x):
+        # x 是对应 encoder 的各个层的输出（列表），List[0层(原始输入）， 1层，...., N 层]
+        # 每层的 shape 是 BCHW 
         out = x.pop()
         for up_block in self.up_blocks:
             out = up_block(out)
             skip = x.pop()
+            # 拼接 skip-connection
             out = torch.cat([out, skip], dim=1)
         return out
 
@@ -184,6 +203,8 @@ class Decoder(nn.Module):
 class Hourglass(nn.Module):
     """
     Hourglass architecture.
+    # 沙漏结构
+    https://towardsdatascience.com/using-hourglass-networks-to-understand-human-poses-1e40e349fa15
     """
 
     def __init__(self, block_expansion, in_features, num_blocks=3, max_features=256):
@@ -193,6 +214,7 @@ class Hourglass(nn.Module):
         self.out_filters = self.decoder.out_filters
 
     def forward(self, x):
+        # 输入的 shape 是 batch-size x channel x H x W
         return self.decoder(self.encoder(x))
 
 
