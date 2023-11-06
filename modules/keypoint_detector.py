@@ -14,16 +14,28 @@ class KPDetector(nn.Module):
                  single_jacobian_map=False, pad=0):
         super(KPDetector, self).__init__()
 
+        # predictor 的输出： batch-size x (input-channel + block_expansion) x H x W
         self.predictor = Hourglass(block_expansion, in_features=num_channels,
                                    max_features=max_features, num_blocks=num_blocks)
-
+        # 在 channel 维度上保持数量和 kp 数一致
         self.kp = nn.Conv2d(in_channels=self.predictor.out_filters, out_channels=num_kp, kernel_size=(7, 7),
                             padding=pad)
 
         if estimate_jacobian:
+            # 如果是 single, 就 1 个；否则和 kp 数量对应
             self.num_jacobian_maps = 1 if single_jacobian_map else num_kp
+            # 注意 out_channels 是 jacobian_maps 数量的 4 倍
             self.jacobian = nn.Conv2d(in_channels=self.predictor.out_filters,
                                       out_channels=4 * self.num_jacobian_maps, kernel_size=(7, 7), padding=pad)
+            # 将 jacobian 权重置为 0；bias 初始化也是 4 倍，用的是 1,0,0,1 的值，Why？ 
+            # TODO: 要看论文才行了
+            # 问题： 这里做置为 0 的操作有用吗？ 这些权重是在构造的时候就初始化好的？还是后面会统一初始化？
+            # - search 并看了下代码：
+            # - torch 在初始化时，一般默认会调用类自己的 reset_parameters 方法，这就是初始化方法
+            #   例如 Conv2d, 这个方法就是做了 kaiming_uniform_
+            #   所以，构造函数之后，模块的参数已经初始化了；后面除非显式设置，不需要再初始化了
+            #  （不像其他的框架，需要显式再调用 Init 的 op)
+            # - 所以这里在构造函数之后再 set, 肯定是有效的，且后续不会被覆盖！
             self.jacobian.weight.data.zero_()
             self.jacobian.bias.data.copy_(torch.tensor([1, 0, 0, 1] * self.num_jacobian_maps, dtype=torch.float))
         else:
@@ -38,6 +50,7 @@ class KPDetector(nn.Module):
         """
         Extract the mean and from a heatmap
         """
+        # shape = bz x channel x h x w
         shape = heatmap.shape
         heatmap = heatmap.unsqueeze(-1)
         grid = make_coordinate_grid(shape[2:], heatmap.type()).unsqueeze_(0).unsqueeze_(0)
@@ -54,6 +67,7 @@ class KPDetector(nn.Module):
         prediction = self.kp(feature_map)
 
         final_shape = prediction.shape
+        # 在 H, W 维度上先拉平成一维，做 softmax 后再变回来。主要就是想在 HxW 的矩阵上算整体的 softmax
         heatmap = prediction.view(final_shape[0], final_shape[1], -1)
         heatmap = F.softmax(heatmap / self.temperature, dim=2)
         heatmap = heatmap.view(*final_shape)

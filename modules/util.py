@@ -156,6 +156,7 @@ class Encoder(nn.Module):
 
     def forward(self, x):
         # 输入是 BCHW
+        # 输出是一个列表，假设 num_blocks = 2, 则输出是 [x, block1_out, block2_out]
         outs = [x]
         for down_block in self.down_blocks:
             outs.append(down_block(outs[-1]))
@@ -191,12 +192,21 @@ class Decoder(nn.Module):
     def forward(self, x):
         # x 是对应 encoder 的各个层的输出（列表），List[0层(原始输入）， 1层，...., N 层]
         # 每层的 shape 是 BCHW 
+        # 例子： 
+        # - 假设 num_blocks = 2, 则输入是 [original_x, block1_out, block2_out]
         out = x.pop()
         for up_block in self.up_blocks:
+            # decoder 从小到大数，
+            # - 第 1 层的输入是 [block2_out],
+            # - 第 2 层的输入是 cat([decoder_layer1_out, block1_out])
+            #      - prev_decoder_out 和 block1_out 的 shape 应该是一模一样的？
             out = up_block(out)
             skip = x.pop()
             # 拼接 skip-connection
             out = torch.cat([out, skip], dim=1)
+        # 最后的输出，是 cat([decoder_layer2_out, original_x])
+        #   - 两个的 shape, 在 channel 维上不一样；
+        # shape 是 batch-size x (original-channel + block_expansion) x H x W.
         return out
 
 
@@ -215,6 +225,9 @@ class Hourglass(nn.Module):
 
     def forward(self, x):
         # 输入的 shape 是 batch-size x channel x H x W
+        # 输出的 shape 是 batch-size x out_filters x H x W
+        #   - out_filters size = input-channel + block_expansion
+        #   - 注意，它和输入 x 的 shape 不同？并非一个完整的 AutoEncoder?
         return self.decoder(self.encoder(x))
 
 
@@ -222,6 +235,10 @@ class AntiAliasInterpolation2d(nn.Module):
     """
     Band-limited downsampling, for better preservation of the input signal.
     """
+    # 这块看代码看不懂；需要一些背景知识才行
+    # Anti-Alias 的插值，是通过计算算出一个 conv2d 的 kernel，然后用这个 kernel 来做 conv2d 得到的
+    # 关键就是为什么要这么做（比如 hourglass 网络里就直接线性的下采样了；）
+    # 为什么该这么做？
     def __init__(self, channels, scale):
         super(AntiAliasInterpolation2d, self).__init__()
         sigma = (1 / scale - 1) / 2
