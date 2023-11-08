@@ -38,12 +38,14 @@ def make_coordinate_grid(spatial_size, type):
     x = torch.arange(w).type(type)
     y = torch.arange(h).type(type)
 
+    # 变成 -1 => 1 的向量； x / (w - 1) 变成 [0, 1], 2*x - 1 变成 [-1, 1]
     x = (2 * (x / (w - 1)) - 1)
     y = (2 * (y / (h - 1)) - 1)
-
+    # yy shape = [h, w]. 对应 copy 列
     yy = y.view(-1, 1).repeat(1, w)
+    # xx shape = [h, w]. 对应 copy 行
     xx = x.view(1, -1).repeat(h, 1)
-
+    # meshed shape = [h, w, 2]. 最后一维，第 0 个元素是 w(x) 的系数，第 1 个元素是 h(y) 的系数
     meshed = torch.cat([xx.unsqueeze_(2), yy.unsqueeze_(2)], 2)
 
     return meshed
@@ -274,11 +276,13 @@ class AntiAliasInterpolation2d(nn.Module):
         self.int_inv_scale = int(inv_scale)
 
     def forward(self, input):
+        
         if self.scale == 1.0:
             return input
 
         out = F.pad(input, (self.ka, self.kb, self.ka, self.kb))
         out = F.conv2d(out, weight=self.weight, groups=self.groups)
+        # 输出 shape = bz x channle x (H * scale) x (W * scale)
         out = out[:, :, ::self.int_inv_scale, ::self.int_inv_scale]
 
         return out

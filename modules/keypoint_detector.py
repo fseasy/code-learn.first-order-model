@@ -24,7 +24,7 @@ class KPDetector(nn.Module):
         if estimate_jacobian:
             # 如果是 single, 就 1 个；否则和 kp 数量对应
             self.num_jacobian_maps = 1 if single_jacobian_map else num_kp
-            # 注意 out_channels 是 jacobian_maps 数量的 4 倍
+            # 注意 out_channels 是 jacobian_maps 数量的 4 倍； 和 kp 的定义很像
             self.jacobian = nn.Conv2d(in_channels=self.predictor.out_filters,
                                       out_channels=4 * self.num_jacobian_maps, kernel_size=(7, 7), padding=pad)
             # 将 jacobian 权重置为 0；bias 初始化也是 4 倍，用的是 1,0,0,1 的值，Why？ 
@@ -44,6 +44,10 @@ class KPDetector(nn.Module):
         self.temperature = temperature
         self.scale_factor = scale_factor
         if self.scale_factor != 1:
+            # 这个是在输入图像维度做 scale. 使用了 AntiAlias 的 interpolation. 这里是下采样
+            # 相比 HourGlass ? 
+            #       HourGlass 里的下采样是通过 pool 来实现的；
+            #       上采样是用的 nearest 方式, anti-alias 默认为 False
             self.down = AntiAliasInterpolation2d(num_channels, self.scale_factor)
 
     def gaussian2kp(self, heatmap):
@@ -52,21 +56,27 @@ class KPDetector(nn.Module):
         """
         # shape = bz x channel x h x w
         shape = heatmap.shape
+        # => bz x channel x h x w x 1
         heatmap = heatmap.unsqueeze(-1)
+        # make_coordinate_grid 返回 shape = h x w x 2; 最后 2 维，第一个是 x 的 -1,1 渐变；第二个是对 y 的 -1,1 的渐变
+        # grid 的 shape 为 1 x 1 x h x w x 2，是从左上角到右下角由-1 到 1 的 uniform 渐变.
         grid = make_coordinate_grid(shape[2:], heatmap.type()).unsqueeze_(0).unsqueeze_(0)
+        # value shape = 1 x 1 x 1 x 2； 出来的是啥？ guassian 的 mean? 原理是？
         value = (heatmap * grid).sum(dim=(2, 3))
         kp = {'value': value}
 
         return kp
 
     def forward(self, x):
+        # multi-scale
         if self.scale_factor != 1:
             x = self.down(x)
 
         feature_map = self.predictor(x)
         prediction = self.kp(feature_map)
-
+        # shape = batch-size x kp-num x (H - 7 + 1) x (W - 6)
         final_shape = prediction.shape
+        # 计算 heatmap
         # 在 H, W 维度上先拉平成一维，做 softmax 后再变回来。主要就是想在 HxW 的矩阵上算整体的 softmax
         heatmap = prediction.view(final_shape[0], final_shape[1], -1)
         heatmap = F.softmax(heatmap / self.temperature, dim=2)
@@ -75,14 +85,20 @@ class KPDetector(nn.Module):
         out = self.gaussian2kp(heatmap)
 
         if self.jacobian is not None:
+            # shape = bz x (4 * jacobian-num) x (H - 6) x (W - 6)
             jacobian_map = self.jacobian(feature_map)
+            # => bz x jacobian-num x 4 x h x w 
             jacobian_map = jacobian_map.reshape(final_shape[0], self.num_jacobian_maps, 4, final_shape[2],
                                                 final_shape[3])
+            # heat-map: batch-size x kp-num x (H - 7 + 1) x (W - 6) => batch-size x kp-num x 1 x (H - 7 + 1) x (W - 6) 
+            # kp-num 和 jacobian-num 是兼容的： jacobian-num 可能是 1，可能是 kp-num
             heatmap = heatmap.unsqueeze(2)
-
+            # heatmap 是 kp prediction 结果做 softmax 得到的；这里相乘的含义？#TODO
             jacobian = heatmap * jacobian_map
+            # 将 h, w 维度加和，变成 bz x jacobian-num x 4 x 1
             jacobian = jacobian.view(final_shape[0], final_shape[1], 4, -1)
             jacobian = jacobian.sum(dim=-1)
+            # 最后 shape 变为 bz x jacobian-num x 2 x 2! 果然这个 4 是一个 2 x 2 矩阵的含义
             jacobian = jacobian.view(jacobian.shape[0], jacobian.shape[1], 2, 2)
             out['jacobian'] = jacobian
 
